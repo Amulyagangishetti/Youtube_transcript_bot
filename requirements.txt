@@ -1,0 +1,9 @@
+langchain-community
+google-api-python-client youtube-transcript-api
+langchain langchain-groq
+gradio
+-qU langchain-huggingface
+langchain-chroma
+transformers
+fpdf
+--upgrade langchain

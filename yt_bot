@@ -1,0 +1,151 @@
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain_groq import ChatGroq
+import os
+from langchain.embeddings.huggingface import HuggingFaceEmbeddings
+from langchain.vectorstores import Chroma
+import gradio as gr
+from googleapiclient.discovery import build
+from transformers import MarianMTModel, MarianTokenizer, pipeline
+from fpdf import FPDF
+from youtube_transcript_api import YouTubeTranscriptApi
+
+API_KEY = "your_api_key"
+youtube = build("youtube", "v3", developerKey=API_KEY)
+
+def get_video_id(url):
+  
+  parts = url.split('/')
+  
+  video_id_part = parts[-1].split('?')[0]
+  return video_id_part
+
+def get_transcript(video_id):
+    """Fetch transcript for a given YouTube video ID."""
+    try:
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        return  transcript
+    except Exception as e:
+        return f"Error fetching transcript: {e}"
+
+def get_video_title(video_id):
+  request=youtube.videos().list(part="snippet",id=video_id)
+  response=request.execute()
+  return response["items"][0]["snippet"]["title"]
+
+os.environ["GROQ_API_KEY"]="your_groq_api_key"
+llm=ChatGroq(model="llama3-8b-8192")
+prompt=PromptTemplate(
+    input_variables=["transcript"],
+    template="Summarize the following video transcript:\n\n{transcript}"
+)
+def generate_summary(transcript):
+  chain=LLMChain(llm=llm,prompt=prompt)
+  summary=chain.run(transcript)
+  return summary
+
+def export_txt(summary, filename="summary.txt"):
+    with open(filename, "w") as file:
+        file.write(summary)
+
+def export_pdf(summary, filename="summary.pdf"):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 10, summary)
+    pdf.output(filename)
+
+def summarize_with_timestamps(transcript):
+    summaries = []
+    for entry in transcript:
+      if not isinstance(entry, dict) or 'start' not in entry or 'text' not in entry:
+            continue  # Skip invalid entries
+      timestamp = entry['start']
+      summary = summarize_text(entry['text'])  # Placeholder for your summarize function
+      summaries.append(f"{timestamp} - {summary}")
+    return "\n".join(summaries)
+
+
+def summarize_text(text):
+    """Simplified summarization (can be replaced with a more sophisticated model)."""
+    return text[:min(100, len(text))] + "..."
+
+def load_model(source_lang='en', target_lang='es'):
+    model_name = f'Helsinki-NLP/opus-mt-{source_lang}-{target_lang}'
+    model = MarianMTModel.from_pretrained(model_name)
+    tokenizer = MarianTokenizer.from_pretrained(model_name)
+    return model, tokenizer
+
+# Initialize the model and tokenizer globally (for faster reuse)
+model, tokenizer = load_model(source_lang='en', target_lang='es')
+
+def translate_text(text, source_lang='en', target_lang='es', chunk_size=512):
+    """Translate text with HuggingFace MarianMT model and handle long text."""
+
+    # Tokenize the input text
+    inputs = tokenizer(text, return_tensors='pt', truncation=True, padding=True)
+
+    # Split text into chunks if it's too long for the model
+    input_ids = inputs['input_ids']
+    if input_ids.shape[1] > chunk_size:
+        num_chunks = (input_ids.shape[1] // chunk_size) + 1
+        chunks = [input_ids[:, i * chunk_size: (i + 1) * chunk_size] for i in range(num_chunks)]
+    else:
+        chunks = [input_ids]
+
+    # Translate each chunk and join the results
+    translated_chunks = []
+    for chunk in chunks:
+        translated = model.generate(chunk)
+        translated_text = tokenizer.decode(translated[0], skip_special_tokens=True)
+        translated_chunks.append(translated_text)
+
+    return " ".join(translated_chunks)
+
+def process_video(url,target_lang='en'):
+  video_id=get_video_id(url)
+  transcript=get_transcript(video_id)
+  title=get_video_title(video_id)
+  if isinstance(transcript, str) and "Error" in transcript:
+        return transcript, "Error"
+  if not isinstance(transcript, list):
+        return "Error: Invalid transcript format."
+  timestamped_summary = summarize_with_timestamps(transcript)
+  translated_summary = translate_text(timestamped_summary, source_lang='en', target_lang=target_lang)
+  sentiment_label, sentiment_score = analyze_sentiment(translated_summary)
+  summary=generate_summary(translated_summary)
+  output = {
+        'summary': summary,
+        'sentiment': f"Sentiment: {sentiment_label} (Confidence: {sentiment_score:.2f})",
+        'translated_summary': translated_summary
+  }
+  return translated_summary,output['sentiment']
+
+##Gradio UI code
+
+with gr.Blocks() as demo:
+  gr.Markdown("# Youtube Video Summarizer")
+  with gr.Row():
+    url_input=gr.Textbox(label="Enter Youtube Video URL")
+    language_input=gr.Dropdown(label="Select language",choices=["en","es","fr","de","it"],value="en")
+    summarize_button=gr.Button("Summarize")
+  summary_output = gr.Textbox(label="Summary", interactive=False)
+  sentiment_output = gr.Textbox(label="Sentiment Analysis", interactive=False)
+
+  summarize_button.click(
+        process_video,
+        inputs=[url_input, language_input],
+        outputs=[summary_output, sentiment_output]
+    )
+  with gr.Row():
+        txt_button = gr.Button("Export as TXT")
+        pdf_button = gr.Button("Export as PDF")
+  def export_summary_file(summary, file_format="txt"):
+        if file_format == "txt":
+            export_txt(summary, filename="summary.txt")
+        elif file_format == "pdf":
+            export_pdf(summary, filename="summary.pdf")
+
+  txt_button.click(export_summary_file, inputs=summary_output, outputs=None, js="exportSummary('txt')")
+  pdf_button.click(export_summary_file, inputs=summary_output, outputs=None, js="exportSummary('pdf')")
+demo.launch(debug=True)

@@ -44,16 +44,27 @@ def generate_summary(transcript):
   summary=chain.run(transcript)
   return summary
 
-def export_txt(summary, filename="summary.txt"):
-    with open(filename, "w") as file:
-        file.write(summary)
+def export_summary(summary, file_type):
+    if file_type == "pdf":
+        # Placeholder for PDF export logic
+        file_path = "summary.pdf"
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=12)
+        pdf.multi_cell(0, 10, summary)
+        pdf.output(file_path)
+        return file_path
+    elif file_type == "txt":
+        # Placeholder for TXT export logic
+        file_path = "summary.txt"
+        with open(file_path, "w") as file:
+          file.write(summary)
+        return file_path
 
-def export_pdf(summary, filename="summary.pdf"):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.multi_cell(0, 10, summary)
-    pdf.output(filename)
+def summarize_text(text):
+    """Simplified summarization (can be replaced with a more sophisticated model)."""
+    return text[:min(100, len(text))] + "..."
+
 
 def summarize_with_timestamps(transcript):
     summaries = []
@@ -66,9 +77,7 @@ def summarize_with_timestamps(transcript):
     return "\n".join(summaries)
 
 
-def summarize_text(text):
-    """Simplified summarization (can be replaced with a more sophisticated model)."""
-    return text[:min(100, len(text))] + "..."
+
 
 def load_model(source_lang='en', target_lang='es'):
     model_name = f'Helsinki-NLP/opus-mt-{source_lang}-{target_lang}'
@@ -76,16 +85,12 @@ def load_model(source_lang='en', target_lang='es'):
     tokenizer = MarianTokenizer.from_pretrained(model_name)
     return model, tokenizer
 
-# Initialize the model and tokenizer globally (for faster reuse)
+
 model, tokenizer = load_model(source_lang='en', target_lang='es')
 
 def translate_text(text, source_lang='en', target_lang='es', chunk_size=512):
-    """Translate text with HuggingFace MarianMT model and handle long text."""
-
-    # Tokenize the input text
     inputs = tokenizer(text, return_tensors='pt', truncation=True, padding=True)
 
-    # Split text into chunks if it's too long for the model
     input_ids = inputs['input_ids']
     if input_ids.shape[1] > chunk_size:
         num_chunks = (input_ids.shape[1] // chunk_size) + 1
@@ -93,7 +98,6 @@ def translate_text(text, source_lang='en', target_lang='es', chunk_size=512):
     else:
         chunks = [input_ids]
 
-    # Translate each chunk and join the results
     translated_chunks = []
     for chunk in chunks:
         translated = model.generate(chunk)
@@ -101,6 +105,12 @@ def translate_text(text, source_lang='en', target_lang='es', chunk_size=512):
         translated_chunks.append(translated_text)
 
     return " ".join(translated_chunks)
+
+sentiment_analyzer = pipeline("sentiment-analysis")
+def analyze_sentiment(text):
+    result = sentiment_analyzer(text)
+    return result[0]['label'], result[0]['score']
+
 
 def process_video(url,target_lang='en'):
   video_id=get_video_id(url)
@@ -124,28 +134,35 @@ def process_video(url,target_lang='en'):
 ##Gradio UI code
 
 with gr.Blocks() as demo:
-  gr.Markdown("# Youtube Video Summarizer")
-  with gr.Row():
-    url_input=gr.Textbox(label="Enter Youtube Video URL")
-    language_input=gr.Dropdown(label="Select language",choices=["en","es","fr","de","it"],value="en")
-    summarize_button=gr.Button("Summarize")
-  summary_output = gr.Textbox(label="Summary", interactive=False)
-  sentiment_output = gr.Textbox(label="Sentiment Analysis", interactive=False)
+    # Input components
+    url_input = gr.Textbox(label="Enter your URL here")
+    language_input = gr.Dropdown(label="Select language", choices=["en", "es", "fr", "de", "it"], value="en")
 
-  summarize_button.click(
+
+    # Button to trigger summarization
+    summarize_button = gr.Button("Summarize")
+
+    # Output components
+    summary_output = gr.Textbox(label="Summarized Output")
+    sentiment_output = gr.Textbox(label="Sentiment Analysis")
+
+    # Button to export the summary
+    export_button = gr.Button("Export Summary")
+    export_file_output = gr.File(label="Download Summary")
+    file_type_input = gr.Radio(choices=["pdf", "txt"], label="File Type")
+
+    # Define the event listeners
+    summarize_button.click(
         process_video,
         inputs=[url_input, language_input],
         outputs=[summary_output, sentiment_output]
     )
-  with gr.Row():
-        txt_button = gr.Button("Export as TXT")
-        pdf_button = gr.Button("Export as PDF")
-  def export_summary_file(summary, file_format="txt"):
-        if file_format == "txt":
-            export_txt(summary, filename="summary.txt")
-        elif file_format == "pdf":
-            export_pdf(summary, filename="summary.pdf")
 
-  txt_button.click(export_summary_file, inputs=summary_output, outputs=None, js="exportSummary('txt')")
-  pdf_button.click(export_summary_file, inputs=summary_output, outputs=None, js="exportSummary('pdf')")
-demo.launch(debug=True)
+    export_button.click(
+        fn=export_summary,
+        inputs=[summary_output,file_type_input],
+        outputs=export_file_output
+    )
+
+if __name__ == "__main__":
+    demo.launch(show_error=True)
